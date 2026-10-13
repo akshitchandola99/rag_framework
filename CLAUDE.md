@@ -5,9 +5,11 @@ I'm a Senior AI QA Engineer (mostly manual-testing background) building a local 
 - Hardware: MacBook Pro M1, 8 GB RAM, 256 GB SSD
 - Runtime: Ollama 0.40.3 at http://localhost:11434, generator model llama3.2:3b (Q4_K_M)
 - Plan doc: https://claude.ai/code/artifact/52b4542a-d8d6-4aa6-9478-4fbaa75f49c8
-- Implementation guide (the doc we keep adding to): https://claude.ai/code/artifact/b32269ff-ce8f-4186-b984-8cf68f206b1b
+- Phase docs (one doc per phase; the Phase 0 doc also holds the phase tracker):
+  - Phase 0 — Environment and hardware baseline: https://claude.ai/code/artifact/b32269ff-ce8f-4186-b984-8cf68f206b1b
+  - Phase 1 — Load documents with metadata: https://claude.ai/code/artifact/7df3b55e-6623-464f-8990-7106ec3af43f
 - Local exports: /Users/nowgg/Automation/rag_framework/rag_plan_docs/
-- Read the plan and the implementation guide first. Follow the plan's stack, roadmap and phase order. Phase 0 is done; continue from the next unticked phase in the tracker.
+- Read the plan and the phase docs first. Follow the plan's stack, roadmap and phase order. Phase 0 is done; continue from the next unticked phase in the tracker.
 
 # Hard constraints
 - Zero mandatory cost: local models only (Ollama, local embeddings), no paid APIs, no cloud services, no accounts.
@@ -46,12 +48,12 @@ I'm a Senior AI QA Engineer (mostly manual-testing background) building a local 
 - Test code and commands on my machine before adding them to the doc when possible; report the real results (numbers, outputs) and say clearly what wasn't tested.
 - If Ollama isn't running, start it for the test and stop it afterwards, and tell me.
 
-# The implementation guide doc
-- Add each new phase to the implementation guide doc; never create a new doc for a phase.
+# The phase docs
+- Each phase gets its own doc, titled "RAG Quality Lab — Phase N: <name>", linked from its line in the Phase 0 doc's tracker.
 - Follow Phase 0's structure: Goal → Concepts → Setup steps → Code → "What the code does, part by part" → Tests → Run it (with part-by-part command explanation) → Expected output → Common errors and debugging → Exercise → Done criteria.
 - Put each detail in the section where the reader first needs it (e.g. an explanation goes right under the command or code it explains).
 - Use tables for comparisons, numbered lists for steps, `- [ ]` checklists for done criteria.
 - Include real outputs from my machine, formatted (pretty-printed JSON, field-by-field tables with converted units).
 - Keep the phase tracker at the top up to date (I tick phases myself).
 - Read the doc for my recent edits before changing it, and never overwrite my edits.
-- When I ask, re-export both docs as Markdown to rag_plan_docs/ (project_plan.md, implementation_guide.md, architecture_diagram.png).
+- When I ask, re-export the docs as Markdown to rag_plan_docs/ (project_plan.md, phase_<N>_<short_name>.md such as phase_0_environment_and_baseline.md and phase_1_load_documents.md, architecture_diagram.png).

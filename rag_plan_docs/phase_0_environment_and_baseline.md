@@ -1,4 +1,4 @@
-# RAG Quality Lab — Implementation Guide
+# RAG Quality Lab — Phase 0: Environment and hardware baseline
 
 Oct 12, 2026 · @Akshit
 
@@ -9,7 +9,7 @@ A phase-by-phase build log for the local RAG app and its evaluation framework; e
 Tick a phase only when its verification checks pass.
 
 - [ ] Phase 0 — Environment, Git, Ollama, hardware baseline
-- [ ] Phase 1 — Load documents with metadata
+- [ ] Phase 1 — Load documents with metadata ([separate doc](https://claude.ai/code/artifact/7df3b55e-6623-464f-8990-7106ec3af43f))
 - [ ] Phase 2 — Chunking
 - [ ] Phase 3 — Local embeddings
 - [ ] Phase 4 — Retrieval (numpy brute force, then Chroma)
