@@ -18,7 +18,7 @@ A RAG system can only answer from text it has loaded, and it can only cite a sou
 | Text extraction | Pulling plain text out of a file format | For PDFs this needs a library; `.md` and `.txt` are already plain text |
 | PyMuPDF | A Python library that opens PDFs and extracts their text, page by page | Imported as `pymupdf`. License: **AGPL-3.0** (see below) |
 | Dataclass | A small Python class that just holds named fields, written with `@dataclass` | Our `Page` record |
-| `Path` | Python's object for a file or folder location (from `pathlib`) | `Path("data/raw")` |
+| `Path` | Python's object for a file or folder location (from `pathlib`) | `PROJECT_ROOT / "data" / "raw"` |
 | Encoding | The rule that turns bytes on disk into letters. **UTF-8** is the modern standard | We read `.md` and `.txt` as UTF-8 |
 | Exception | Python's way of saying "something went wrong". `raise` creates one; `try`/`except` catches one | We raise `ValueError` for bad files |
 
@@ -126,7 +126,8 @@ from pathlib import Path
 
 import pymupdf
 
-OUTPUT_PATH = Path("data/raw/brightwater_travel_policy.pdf")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+OUTPUT_PATH = PROJECT_ROOT / "data" / "raw" / "brightwater_travel_policy.pdf"
 
 PAGE_TEXTS = [
     (
@@ -177,6 +178,12 @@ if __name__ == "__main__":
 
 **What the script does, part by part**
 
+- **`PROJECT_ROOT` and `OUTPUT_PATH`** build an **absolute path**: the full location from the top of your disk, like `/Users/nowgg/Automation/rag_framework/data/raw/brightwater_travel_policy.pdf`. Read `PROJECT_ROOT` left to right:
+  - `__file__` is the location of this Python file: `.../rag_framework/src/ragqa/make_sample_pdf.py`.
+  - `.resolve()` turns it into a full, clean absolute path.
+  - `.parents[2]` walks up the folder tree: `parents[0]` is `src/ragqa`, `parents[1]` is `src`, and `parents[2]` is the project folder.
+  - `PROJECT_ROOT / "data" / "raw" / ...` joins folder names with `/`, the same way as `tmp_path / "file.md"` in the tests.
+  - **Why not just `Path("data/raw/...")`?** That's a *relative* path: Python looks for it inside whatever folder the Terminal is in. Run the script from anywhere else and it fails or writes to the wrong place. The absolute path works from any folder. This project always uses this pattern for its own files.
 - **`PAGE_TEXTS`** is a list with one string per page. Strings inside brackets `( ... )` that sit next to each other are glued into one string, which keeps long lines readable. `\n` means "new line". The third item is `""` (empty), so page 3 stays blank.
 - **`write_pdf(output_path, page_texts)`** takes a file location and a list of page texts, and writes a PDF. It returns nothing.
   - `pymupdf.open()` with no file name creates a new, empty PDF in memory.
@@ -195,10 +202,10 @@ uv run python -m ragqa.make_sample_pdf
 - **What it does:** runs the script, which writes `data/raw/brightwater_travel_policy.pdf`.
 - **The parts:** `uv run` uses the project's environment; `python -m ragqa.make_sample_pdf` runs the file `make_sample_pdf.py` inside the `ragqa` package.
 
-Real output on my test run:
+Real output on my test run (with your project path; it prints the full path because OUTPUT\_PATH is absolute):
 
 ```text
-Wrote data/raw/brightwater_travel_policy.pdf with 4 pages (page 3 is blank on purpose)
+Wrote /Users/nowgg/Automation/rag_framework/data/raw/brightwater_travel_policy.pdf with 4 pages (page 3 is blank on purpose)
 ```
 
 Open the PDF in Preview to see it. Running the script again simply overwrites the file with the same content.
@@ -218,7 +225,8 @@ from pathlib import Path
 
 import pymupdf
 
-DEFAULT_DATA_FOLDER = Path("data/raw")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_FOLDER = PROJECT_ROOT / "data" / "raw"
 PREVIEW_LENGTH = 200
 
 
@@ -335,7 +343,7 @@ if __name__ == "__main__":
 **What the code does, part by part**
 
 - **The imports.** `sys` gives us the command-line words (`sys.argv`) and `sys.exit`. `dataclass` builds our record type. `Path` handles file locations. `pymupdf` reads PDFs.
-- **The two CAPITAL settings.** `DEFAULT_DATA_FOLDER` is where documents live. It's a *relative* path, so it's found from the folder you run the command in (your project folder). `PREVIEW_LENGTH` is how many characters of each page we print: 200, as the plan's Phase 1 check asks.
+- **The three CAPITAL settings.** `PROJECT_ROOT` is the project folder, worked out from this file's own location exactly as in `make_sample_pdf.py` (Step 3): `src/ragqa/loaders.py` → `parents[2]` → `/Users/nowgg/Automation/rag_framework`. `DEFAULT_DATA_FOLDER` is where documents live: `PROJECT_ROOT / "data" / "raw"`, an *absolute* path, so the loader finds `data/raw` whichever folder you run it from. `PREVIEW_LENGTH` is how many characters of each page we print: 200, as the plan's Phase 1 check asks.
 - **`class Page` with `@dataclass`.** A record with four labelled fields. Writing `@dataclass` above the class makes Python create the setup code for us, so `Page(source="a.md", page=1, file_type="md", text="...")` just works, and printing a `Page` shows all four fields. Every later phase passes these records around.
 - **`load_text_file(file_path)`** — input: the location of a `.md` or `.txt` file. Output: a list holding exactly one `Page`.
   - `read_text(encoding="utf-8")` reads the whole file as one string. If the bytes aren't valid UTF-8, Python raises `UnicodeDecodeError`; we turn it into a `ValueError` that names the file, so the skip message tells you *which* file failed.
@@ -358,7 +366,7 @@ if __name__ == "__main__":
   - `all_pages.extend(pages)` adds every page from this file to the big list (`append` would add the list itself as one item).
 - **`make_preview(text)`** turns the page into one short line for printing. `text.split()` breaks the text at every space and line break; `" ".join(...)` glues the words back with single spaces; `[:PREVIEW_LENGTH]` keeps the first 200 characters. This is only for display: the stored `Page.text` is untouched.
 - **`main()`**
-  - `sys.argv` is the list of words on the command line. `sys.argv[0]` is the program itself, so `len(sys.argv) > 1` means "the user typed a folder name". Otherwise we use `data/raw`.
+  - `sys.argv` is the list of words on the command line. `sys.argv[0]` is the program itself, so `len(sys.argv) > 1` means "the user typed a folder name". A typed folder is used as typed, so a relative one like `data/adversarial` is read from the folder you're in. Otherwise we use `DEFAULT_DATA_FOLDER`, the absolute path to `data/raw`.
   - If the folder doesn't exist, we print where we looked (`resolve()` turns a relative path into the full one) and stop with exit code 1, instead of a long traceback.
   - For each page we print one header line (source, page, type, character count) and the preview.
   - `set()` is a collection that keeps only unique values. Adding the same file name three times still counts once, which gives us the number of files.
@@ -541,7 +549,7 @@ Brightwater Robotics - Travel and Expenses Policy Version 2.1, effective 1 March
 --- brightwater_travel_policy.pdf | page 4 | pdf | 193 chars
 4. Daily allowance and claims The daily meal allowance is 45 euros. Alcohol is never reimbursed. Submit receipts in Compass within 30 days of returning; late claims are rejected automatically.
 
-Loaded 5 pages from 3 files in data/raw
+Loaded 5 pages from 3 files in /Users/nowgg/Automation/rag_framework/data/raw
 ```
 
 What to notice:
@@ -555,7 +563,7 @@ What to notice:
 **What one `Page` record looks like inside Python.** This prints the third record from the PDF:
 
 ```bash
-uv run python -c "from pathlib import Path; from ragqa.loaders import load_document; print(load_document(Path('data/raw/brightwater_travel_policy.pdf'))[2])"
+uv run python -c "from ragqa.loaders import DEFAULT_DATA_FOLDER, load_document; print(load_document(DEFAULT_DATA_FOLDER / 'brightwater_travel_policy.pdf')[2])"
 ```
 
 - **What it does:** loads the PDF and prints item `[2]` of the result, which is the third `Page` (lists count from 0).
@@ -602,8 +610,8 @@ The `SKIPPED` and `Folder not found` messages below are real outputs from my tes
 | --- | --- | --- |
 | `ModuleNotFoundError: No module named 'pymupdf'` | PyMuPDF isn't installed in the project's environment | Run `uv add pymupdf` (Step 1); always start commands with `uv run` |
 | `warning: The fitz API is deprecated...` | Code (yours or copied) uses the old name `import fitz` | Change it to `import pymupdf` |
-| `Folder not found: /private/tmp/data/raw` | You ran the command from the wrong folder, so `data/raw` points somewhere else | `cd` into the project folder, or pass the folder: `uv run python -m ragqa.loaders data/raw` |
-| `Loaded 0 pages from 0 files in data/raw` | The folder only has `.gitkeep` | Do Steps 2 and 3 to add the sample documents |
+| `Folder not found: /private/tmp/data/adversarial` | You typed a relative folder (`data/adversarial`) while the Terminal was in another folder (`/tmp`). Typed folders are read from where you are; only the default `data/raw` is absolute | `cd` into the project folder, or type the full path: `uv run python -m ragqa.loaders /Users/nowgg/Automation/rag_framework/data/adversarial` |
+| `Loaded 0 pages from 0 files in /Users/nowgg/Automation/rag_framework/data/raw` | The folder only has `.gitkeep` | Do Steps 2 and 3 to add the sample documents |
 | `SKIPPED menu.txt: not valid UTF-8 text ('utf-8' codec can't decode byte 0xe9 ...)` | The file was saved in an older encoding (for example Latin-1, where `é` is byte `0xe9`) | Open it in VS Code, click the encoding name at the bottom right, choose **Save with Encoding → UTF-8** |
 | `SKIPPED corrupted.pdf: not a readable PDF (Failed to open file ... as type pdf.)` | The file is damaged, or isn't really a PDF (only its name ends in `.pdf`) | Open it in Preview. If Preview fails too, get a fresh copy |
 | `SKIPPED x.pdf: PDF has no extractable text (empty or scanned)` | The PDF holds pictures of pages, not text | Use a PDF with real text. OCR is out of scope for this project |
@@ -625,7 +633,7 @@ file data/raw/*
 - **The parts:** `data/raw/*` means "every file in `data/raw`" (the `*` matches any name; hidden files like `.gitkeep` aren't matched).
 
 ```bash
-uv run python -c "from pathlib import Path; from ragqa.loaders import load_pdf; print(repr(load_pdf(Path('data/raw/brightwater_travel_policy.pdf'))[1].text))"
+uv run python -c "from ragqa.loaders import DEFAULT_DATA_FOLDER, load_pdf; print(repr(load_pdf(DEFAULT_DATA_FOLDER / 'brightwater_travel_policy.pdf')[1].text))"
 ```
 
 - **What it does:** prints the raw text of the PDF's second loaded page, with `repr(...)`.
@@ -685,18 +693,18 @@ Three bad files, three clear reasons, and no crash. Now answer these in a few wo
 2. Copy `brightwater_faq.txt` into `data/adversarial/` and run again. What changes in the summary line?
 3. The meal allowance is on the PDF's **fourth** page, but it's the **third** `Page` record. Which number must a citation show, and why?
 
-**Part B — Write one test yourself.** Add a tenth test to `tests/unit/test_loaders.py` called `test_sample_documents_load`. It should load the real `data/raw` folder with `loaders.load_folder(Path("data/raw"))` and check:
+**Part B — Write one test yourself.** Add a tenth test to `tests/unit/test_loaders.py` called `test_sample_documents_load`. It should load the real `data/raw` folder with `loaders.load_folder(loaders.DEFAULT_DATA_FOLDER)` and check:
 
 - there are 5 pages,
 - there are no skipped files,
 - the PDF's page numbers are `[1, 2, 4]`.
 
-Hints: copy the loop from `test_pdf_keeps_real_page_numbers_and_skips_blank_pages`, and add an `if page.source == "brightwater_travel_policy.pdf":` inside it. pytest runs from the project folder, so the relative path `data/raw` works. Then break the code on purpose (remove `+ 1` from `load_pdf`), run the tests, read the failure, and put the `+ 1` back.
+Hints: copy the loop from `test_pdf_keeps_real_page_numbers_and_skips_blank_pages`, and add an `if page.source == "brightwater_travel_policy.pdf":` inside it. Use the absolute `loaders.DEFAULT_DATA_FOLDER`, never the relative path `data/raw`, so the test passes from any folder. Then break the code on purpose (remove `+ 1` from `load_pdf`), run the tests, read the failure, and put the `+ 1` back.
 
 ## 1.8 Done criteria
 
 - [ ] `uv run python -m ragqa.make_sample_pdf` writes the 4-page PDF
-- [ ] `uv run python -m ragqa.loaders` prints "Loaded 5 pages from 3 files in data/raw", with the PDF going from page 2 to page 4
+- [ ] `uv run python -m ragqa.loaders` prints "Loaded 5 pages from 3 files in /Users/nowgg/Automation/rag\_framework/data/raw", with the PDF going from page 2 to page 4
 - [ ] `uv run pytest -m "not integration" -v` passes all loader tests (9, or 10 with your own) with no warnings
 - [ ] `uv run python -m ragqa.loaders data/adversarial` shows three SKIPPED lines and no crash
 - [ ] You can explain why blank pages are skipped but still counted

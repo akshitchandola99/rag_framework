@@ -31,6 +31,7 @@ I'm a Senior AI QA Engineer (mostly manual-testing background) building a local 
 - Readable Python: meaningful variable names, explicit loops and conditions, no clever one-liners, no unnecessary lambdas or abstractions, no premature optimization.
 - One import per line, imports at the top of the file.
 - Put code in functions with a `main()` and `if __name__ == "__main__":`.
+- File and folder paths in code are always absolute, built from the module's location: `PROJECT_ROOT = Path(__file__).resolve().parents[2]`, then e.g. `DEFAULT_DATA_FOLDER = PROJECT_ROOT / "data" / "raw"`. Never relative paths like `Path("data/raw")`. Tests and debugging one-liners reuse these constants (e.g. `loaders.DEFAULT_DATA_FOLDER`).
 - Explain important lines and blocks: inputs, outputs, intermediate results, and how they work.
 - HTTP calls use `requests`, never `urllib` unless something can only be done with urllib. Every requests call has `timeout=` and `response.raise_for_status()`.
 - Ollama calls use `"stream": False` and `"options": {"temperature": 0}` unless the phase needs otherwise.

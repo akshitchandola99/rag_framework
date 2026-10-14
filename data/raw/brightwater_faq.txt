@@ -1,0 +1,10 @@
+Brightwater Robotics - IT help desk FAQ
+
+Q: How do I reset my password?
+A: Use the self-service page at id.brightwater.example. Passwords expire every 180 days.
+
+Q: Who do I call outside office hours?
+A: The on-call IT number is extension 4400. It is staffed from 07:00 to 22:00 every day.
+
+Q: Can I install my own software?
+A: Only from the approved catalogue in the Software Center app. Anything else needs a ticket.
