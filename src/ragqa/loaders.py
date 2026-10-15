@@ -11,6 +11,7 @@ DEFAULT_DATA_FOLDER = PROJECT_ROOT / "data" / "raw"
 PREVIEW_LENGTH = 200
 
 
+# One page of text, plus the file and page number it came from.
 @dataclass
 class Page:
     source: str
@@ -19,6 +20,7 @@ class Page:
     text: str
 
 
+# Load a .md or .txt file as a single page.
 def load_text_file(file_path: Path) -> list[Page]:
     try:
         text = file_path.read_text(encoding="utf-8")
@@ -33,6 +35,7 @@ def load_text_file(file_path: Path) -> list[Page]:
     return [whole_file_page]
 
 
+# Load a PDF as one page per PDF page that has text.
 def load_pdf(file_path: Path) -> list[Page]:
     try:
         pdf_document = pymupdf.open(file_path)
@@ -55,6 +58,7 @@ def load_pdf(file_path: Path) -> list[Page]:
     return pages
 
 
+# Pick the right loader for a file's extension.
 def load_document(file_path: Path) -> list[Page]:
     extension = file_path.suffix.lower()
     if extension == ".pdf":
@@ -64,6 +68,7 @@ def load_document(file_path: Path) -> list[Page]:
     raise ValueError(f"{file_path.name}: unsupported file type '{extension}'")
 
 
+# Load every document in a folder; collect reasons for skipped files.
 def load_folder(folder_path: Path) -> tuple[list[Page], list[str]]:
     all_pages = []
     skipped_files = []
@@ -85,11 +90,13 @@ def load_folder(folder_path: Path) -> tuple[list[Page], list[str]]:
     return all_pages, skipped_files
 
 
+# Squash text onto one line and cut it to the preview length.
 def make_preview(text: str) -> str:
     one_line_text = " ".join(text.split())
     return one_line_text[:PREVIEW_LENGTH]
 
 
+# Load a folder and print every page with a short preview.
 def main() -> None:
     if len(sys.argv) > 1:
         folder_path = Path(sys.argv[1])

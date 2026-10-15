@@ -156,6 +156,7 @@ PAGE_TEXTS = [
 ]
 
 
+# Write a PDF with one page per text (an empty text gives a blank page).
 def write_pdf(output_path: Path, page_texts: list[str]) -> None:
     pdf_document = pymupdf.open()
     for page_text in page_texts:
@@ -167,6 +168,7 @@ def write_pdf(output_path: Path, page_texts: list[str]) -> None:
     pdf_document.close()
 
 
+# Create the sample travel-policy PDF in data/raw.
 def main() -> None:
     write_pdf(OUTPUT_PATH, PAGE_TEXTS)
     print(f"Wrote {OUTPUT_PATH} with {len(PAGE_TEXTS)} pages (page 3 is blank on purpose)")
@@ -210,6 +212,64 @@ Wrote /Users/nowgg/Automation/rag_framework/data/raw/brightwater_travel_policy.p
 
 Open the PDF in Preview to see it. Running the script again simply overwrites the file with the same content.
 
+## `ValueError` in short
+
+`ValueError` is Python's built-in error for **"the type is right, but the value is wrong"**. A file name is a fine type for `load_document`, but an empty file is a bad *value*. Every loader, chunker and test in this project raises or checks it, so here is the whole picture once.
+
+**Anatomy.** Errors in Python are classes arranged in a family tree. `ValueError` sits here (checked on your Python 3.12):
+
+```text
+BaseException
+└── Exception                  (catch-all for normal errors)
+    └── ValueError             (right type, wrong value)
+        └── UnicodeDecodeError (bytes that aren't valid text)
+```
+
+Because `UnicodeDecodeError` is a kind of `ValueError`, `except ValueError` also catches it. We still turn it into our own `ValueError` in `load_text_file`, so the message names the file.
+
+**Parameters.** `ValueError(*args)` takes any number of plain values and no keyword arguments:
+
+| You write | `str(error)` gives | `error.args` gives |
+| --- | --- | --- |
+| `ValueError("empty.md: file has no text")` | `empty.md: file has no text` | `('empty.md: file has no text',)` |
+| `ValueError()` | `''` (empty) | `()` |
+| `ValueError("bad value", 42)` | `('bad value', 42)` (hard to read) | `('bad value', 42)` |
+| `ValueError(message="x")` | Fails: `ValueError() takes no keyword arguments` | — |
+
+Rule for this project: always **one string**, starting with what failed, e.g. `f"{file_path.name}: file has no text"`.
+
+**Syntax you'll use**
+
+| Syntax | What it does | Where we use it |
+| --- | --- | --- |
+| `raise ValueError("message")` | Stops the function and sends the error to whoever called it | `load_document`: unsupported file type |
+| `raise ValueError("message") from error` | Same, and keeps the original error attached as the cause (`error.__cause__`), so the traceback shows both | `load_text_file`, `load_pdf`: wrapping `UnicodeDecodeError` and `FileDataError` |
+| `raise ValueError("message") from None` | Same, but hides the original error from the traceback | Not used yet; for when the original would only confuse |
+| `try: ... except ValueError as error:` | Catches the error, so the program carries on; `error` holds it | `load_folder`: skip the bad file, keep going |
+| `str(error)` | Gets the message as text | `load_folder`: `skipped_files.append(str(error))` |
+| `except (ValueError, TypeError):` | Catches either kind of error | Not used yet |
+| `raise` (alone, inside `except`) | Re-raises the same error after doing something, like logging | Not used yet |
+| `error.add_note("hint")` | Adds an extra line shown under the traceback (Python 3.11+) | Not used yet |
+| `with pytest.raises(ValueError, match="text"):` | In a test: passes only if the code raises `ValueError` with `text` in its message | Every "bad file" test in 1.4 |
+
+**Python raises it by itself too** (real messages from your machine):
+
+| Code | Message |
+| --- | --- |
+| `int("abc")` | `invalid literal for int() with base 10: 'abc'` (Phase 2's chunker hits this with a typed setting like `abc`) |
+| `[1, 2].index(5)` | `5 is not in list` |
+| `a, b = [1, 2, 3]` | `too many values to unpack (expected 2)` |
+| `math.sqrt(-1)` | `math domain error` |
+
+**When to pick `ValueError`, and when not**
+
+| Situation | Use |
+| --- | --- |
+| Right type, unacceptable value: empty file, overlap ≥ chunk size, unsupported extension | `ValueError` |
+| Wrong type entirely: a number where a `Path` is expected | `TypeError` |
+| A file that should exist doesn't | `FileNotFoundError` (Python raises it for you) |
+| Errors your own code needs to tell apart ("skip this file" vs "stop the run") | Your own error class, built on `ValueError`. Phase 7's `errors.py` adds these |
+
 ## 1.3 Code: the document loader
 
 This file reads every document in a folder and returns a list of `Page` records. It has one small function per job: one for text files, one for PDFs, one that picks the right one by file extension, and one for a whole folder. Phase 2 (chunking) will import `load_folder()` and `Page` from here.
@@ -230,6 +290,7 @@ DEFAULT_DATA_FOLDER = PROJECT_ROOT / "data" / "raw"
 PREVIEW_LENGTH = 200
 
 
+# One page of text, plus the file and page number it came from.
 @dataclass
 class Page:
     source: str
@@ -238,6 +299,7 @@ class Page:
     text: str
 
 
+# Load a .md or .txt file as a single page.
 def load_text_file(file_path: Path) -> list[Page]:
     try:
         text = file_path.read_text(encoding="utf-8")
@@ -252,6 +314,7 @@ def load_text_file(file_path: Path) -> list[Page]:
     return [whole_file_page]
 
 
+# Load a PDF as one page per PDF page that has text.
 def load_pdf(file_path: Path) -> list[Page]:
     try:
         pdf_document = pymupdf.open(file_path)
@@ -274,6 +337,7 @@ def load_pdf(file_path: Path) -> list[Page]:
     return pages
 
 
+# Pick the right loader for a file's extension.
 def load_document(file_path: Path) -> list[Page]:
     extension = file_path.suffix.lower()
     if extension == ".pdf":
@@ -283,6 +347,7 @@ def load_document(file_path: Path) -> list[Page]:
     raise ValueError(f"{file_path.name}: unsupported file type '{extension}'")
 
 
+# Load every document in a folder; collect reasons for skipped files.
 def load_folder(folder_path: Path) -> tuple[list[Page], list[str]]:
     all_pages = []
     skipped_files = []
@@ -304,11 +369,13 @@ def load_folder(folder_path: Path) -> tuple[list[Page], list[str]]:
     return all_pages, skipped_files
 
 
+# Squash text onto one line and cut it to the preview length.
 def make_preview(text: str) -> str:
     one_line_text = " ".join(text.split())
     return one_line_text[:PREVIEW_LENGTH]
 
 
+# Load a folder and print every page with a short preview.
 def main() -> None:
     if len(sys.argv) > 1:
         folder_path = Path(sys.argv[1])
@@ -378,7 +445,7 @@ Nine unit tests: one per file type, one for page numbering, and one for each kin
 
 Two new pytest tools appear here:
 
-- **`tmp_path`** is a *fixture*: a ready-made helper that pytest hands to any test that names it as a parameter. It's a brand-new empty folder, different for every test and deleted later. Each test writes its own small files there, so tests never depend on (or change) your real `data/raw/` folder.
+- **`tmp_path`** is a *fixture*: a ready-made helper that pytest hands to any test that names it as a parameter. It's **built into pytest**, so we never define it ourselves. What happens: pytest sees the parameter name `tmp_path`, creates a brand-new empty folder on disk, and passes it into the test as a `Path`. `tmp_path / "handbook.md"` only builds the file's path; the file appears when `write_text()` runs. `write_text()` isn't part of the fixture: it's a normal method of Python's `Path` class (from `pathlib`), the partner of the `read_text()` our loader uses. The fixture only decides *where* the folder is. Every test gets its own folder, and pytest keeps the folders from the last 3 runs. Each test writes its own small files there, so tests never depend on (or change) your real `data/raw/` folder.
 - **`pytest.raises(ValueError, match="...")`** means "the code inside this `with` block must raise a `ValueError`, and its message must contain this text". If no error happens, or a different one does, the test fails. This is how we test that bad input is *rejected* properly.
 
 The PDF tests reuse `write_pdf()` from `make_sample_pdf.py` to build small PDFs, instead of writing new PDF code.
@@ -394,6 +461,7 @@ from ragqa import loaders
 from ragqa.make_sample_pdf import write_pdf
 
 
+# A .md file becomes one page with correct metadata.
 def test_markdown_file_becomes_one_page_with_metadata(tmp_path: Path):
     file_path = tmp_path / "handbook.md"
     file_path.write_text("# Leave\n\nAnnual leave is 27 days.", encoding="utf-8")
@@ -407,6 +475,7 @@ def test_markdown_file_becomes_one_page_with_metadata(tmp_path: Path):
     assert "27 days" in pages[0].text
 
 
+# A .txt file is loaded with its text unchanged.
 def test_txt_file_is_loaded(tmp_path: Path):
     file_path = tmp_path / "faq.txt"
     file_path.write_text("Passwords expire every 180 days.", encoding="utf-8")
@@ -417,6 +486,7 @@ def test_txt_file_is_loaded(tmp_path: Path):
     assert pages[0].text == "Passwords expire every 180 days."
 
 
+# Blank PDF pages are skipped, but page numbers stay real.
 def test_pdf_keeps_real_page_numbers_and_skips_blank_pages(tmp_path: Path):
     file_path = tmp_path / "policy.pdf"
     write_pdf(file_path, ["First page text", "", "Third page text"])
@@ -431,6 +501,7 @@ def test_pdf_keeps_real_page_numbers_and_skips_blank_pages(tmp_path: Path):
     assert pages[1].source == "policy.pdf"
 
 
+# A file with only whitespace is rejected.
 def test_empty_text_file_raises(tmp_path: Path):
     file_path = tmp_path / "empty.md"
     file_path.write_text("   \n\n", encoding="utf-8")
@@ -439,6 +510,7 @@ def test_empty_text_file_raises(tmp_path: Path):
         loaders.load_document(file_path)
 
 
+# A file that isn't valid UTF-8 is rejected.
 def test_non_utf8_text_file_raises(tmp_path: Path):
     file_path = tmp_path / "menu.txt"
     file_path.write_bytes(b"Caf\xe9 menu")
@@ -447,6 +519,7 @@ def test_non_utf8_text_file_raises(tmp_path: Path):
         loaders.load_document(file_path)
 
 
+# A PDF with no text at all is rejected.
 def test_pdf_with_only_blank_pages_raises(tmp_path: Path):
     file_path = tmp_path / "blank.pdf"
     write_pdf(file_path, ["", ""])
@@ -455,6 +528,7 @@ def test_pdf_with_only_blank_pages_raises(tmp_path: Path):
         loaders.load_document(file_path)
 
 
+# A broken PDF is rejected with a clear error.
 def test_corrupted_pdf_raises(tmp_path: Path):
     file_path = tmp_path / "broken.pdf"
     file_path.write_bytes(b"this is not really a pdf")
@@ -463,6 +537,7 @@ def test_corrupted_pdf_raises(tmp_path: Path):
         loaders.load_document(file_path)
 
 
+# Unsupported file types like .docx are rejected.
 def test_unsupported_file_type_raises(tmp_path: Path):
     file_path = tmp_path / "notes.docx"
     file_path.write_text("some text", encoding="utf-8")
@@ -471,6 +546,7 @@ def test_unsupported_file_type_raises(tmp_path: Path):
         loaders.load_document(file_path)
 
 
+# Bad files are skipped and hidden files are ignored.
 def test_folder_loading_skips_bad_and_hidden_files(tmp_path: Path):
     (tmp_path / "good.md").write_text("Real content", encoding="utf-8")
     (tmp_path / "empty.txt").write_text("", encoding="utf-8")

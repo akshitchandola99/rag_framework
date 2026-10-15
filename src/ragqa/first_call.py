@@ -4,6 +4,7 @@ OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "llama3.2:3b"
 
 
+# Send one question to Ollama and return its full JSON reply.
 def ask_llm(question: str) -> dict:
     request_data = {
         "model": MODEL_NAME,
@@ -17,6 +18,7 @@ def ask_llm(question: str) -> dict:
     return response_data
 
 
+# Ask one sample question and print the answer and timings.
 def main() -> None:
     question = "What is retrieval-augmented generation? Answer in two sentences."
     print("Question:", question)

@@ -35,6 +35,7 @@ PAGE_TEXTS = [
 ]
 
 
+# Write a PDF with one page per text (an empty text gives a blank page).
 def write_pdf(output_path: Path, page_texts: list[str]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_document = pymupdf.open()
@@ -47,6 +48,7 @@ def write_pdf(output_path: Path, page_texts: list[str]) -> None:
     pdf_document.close()
 
 
+# Create the sample travel-policy PDF in data/raw.
 def main() -> None:
     write_pdf(OUTPUT_PATH, PAGE_TEXTS)
     print(f"Wrote {OUTPUT_PATH} with {len(PAGE_TEXTS)} pages (page 3 is blank on purpose)")

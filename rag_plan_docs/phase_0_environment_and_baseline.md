@@ -11,7 +11,7 @@ Tick a phase only when its verification checks pass.
 - [ ] Phase 0 — Environment, Git, Ollama, hardware baseline
 - [ ] Phase 1 — Load documents with metadata ([separate doc](https://claude.ai/code/artifact/7df3b55e-6623-464f-8990-7106ec3af43f))
 - [ ] Phase 2 — Chunking ([separate doc](https://claude.ai/code/artifact/4b5e335a-21aa-435a-98c4-3d6105208c7f))
-- [ ] Phase 3 — Local embeddings
+- [ ] Phase 3 — Local embeddings ([separate doc](https://claude.ai/code/artifact/a37f9484-2b02-439c-bcbd-42d9145c7a5a))
 - [ ] Phase 4 — Retrieval (numpy brute force, then Chroma)
 - [ ] Phase 5 — Golden v0 + hit@k / MRR
 - [ ] Phase 6 — Grounded generation with Ollama
@@ -510,6 +510,7 @@ OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "llama3.2:3b"
 
 
+# Send one question to Ollama and return its full JSON reply.
 def ask_llm(question: str) -> dict:
     request_data = {
         "model": MODEL_NAME,
@@ -523,6 +524,7 @@ def ask_llm(question: str) -> dict:
     return response_data
 
 
+# Ask one sample question and print the answer and timings.
 def main() -> None:
     question = "What is retrieval-augmented generation? Answer in two sentences."
     print("Question:", question)
@@ -768,6 +770,7 @@ GENERATOR_MODEL = "llama3.2:3b"
 MINIMUM_PYTHON = (3, 12)
 
 
+# Check that Python is 3.12 or newer.
 def check_python_version() -> bool:
     current_version = sys.version_info[:2]
     print(f"Python version: {sys.version.split()[0]}")
@@ -778,6 +781,7 @@ def check_python_version() -> bool:
     return True
 
 
+# Check that Python runs natively on Apple Silicon (arm64).
 def check_architecture() -> bool:
     machine = platform.machine()
     print(f"CPU architecture: {machine}")
@@ -788,6 +792,7 @@ def check_architecture() -> bool:
     return True
 
 
+# Return the names of the models installed in Ollama.
 def list_installed_models() -> list[str]:
     response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10)
     response.raise_for_status()
@@ -799,6 +804,7 @@ def list_installed_models() -> list[str]:
     return model_names
 
 
+# Check that Ollama is running and has our model.
 def check_ollama_server() -> bool:
     print(f"Ollama server at {OLLAMA_URL}")
     try:
@@ -813,6 +819,7 @@ def check_ollama_server() -> bool:
     return True
 
 
+# Ask the model one question and print its speed.
 def measure_generation_speed() -> None:
     print(f"Test generation with {GENERATOR_MODEL} (first call includes model load time)")
     request_data = {
@@ -836,6 +843,7 @@ def measure_generation_speed() -> None:
     print(f"  Generated {generated_tokens} tokens at {tokens_per_second:.1f} tokens/s")
 
 
+# Run every check and say whether the environment is ready.
 def main() -> None:
     python_ok = check_python_version()
     architecture_ok = check_architecture()
@@ -891,10 +899,12 @@ A test is a small function that checks one thing. pytest finds every function wh
 from ragqa import env_check
 
 
+# Python must be 3.12 or newer.
 def test_python_version_meets_minimum():
     assert env_check.check_python_version() is True
 
 
+# Python must run as arm64, not under Rosetta.
 def test_running_on_apple_silicon():
     assert env_check.check_architecture() is True
 ```
@@ -907,6 +917,7 @@ import pytest
 from ragqa import env_check
 
 
+# Ollama must list our generator model.
 @pytest.mark.integration
 def test_generator_model_is_installed():
     model_names = env_check.list_installed_models()

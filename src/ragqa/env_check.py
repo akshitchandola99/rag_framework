@@ -10,6 +10,7 @@ GENERATOR_MODEL = "llama3.2:3b"
 MINIMUM_PYTHON = (3, 12)
 
 
+# Check that Python is 3.12 or newer.
 def check_python_version() -> bool:
     current_version = sys.version_info[:2]
     print(f"Python version: {sys.version.split()[0]}")
@@ -20,6 +21,7 @@ def check_python_version() -> bool:
     return True
 
 
+# Check that Python runs natively on Apple Silicon (arm64).
 def check_architecture() -> bool:
     machine = platform.machine()
     print(f"CPU architecture: {machine}")
@@ -30,6 +32,7 @@ def check_architecture() -> bool:
     return True
 
 
+# Return the names of the models installed in Ollama.
 def list_installed_models() -> list[str]:
     response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10)
     response.raise_for_status()
@@ -41,6 +44,7 @@ def list_installed_models() -> list[str]:
     return model_names
 
 
+# Check that Ollama is running and has our model.
 def check_ollama_server() -> bool:
     print(f"Ollama server at {OLLAMA_URL}")
     try:
@@ -55,6 +59,7 @@ def check_ollama_server() -> bool:
     return True
 
 
+# Ask the model one question and print its speed.
 def measure_generation_speed() -> None:
     print(f"Test generation with {GENERATOR_MODEL} (first call includes model load time)")
     request_data = {
@@ -78,6 +83,7 @@ def measure_generation_speed() -> None:
     print(f"  Generated {generated_tokens} tokens at {tokens_per_second:.1f} tokens/s")
 
 
+# Run every check and say whether the environment is ready.
 def main() -> None:
     python_ok = check_python_version()
     architecture_ok = check_architecture()
