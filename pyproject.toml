@@ -8,8 +8,14 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "chromadb>=1.5.9",
+    "fastapi>=0.143.2",
+    "numpy>=2.5.4",
     "pymupdf>=1.28.2",
+    "python-multipart>=0.0.32",
     "requests>=2.34.2",
+    "sentence-transformers>=6.1.0",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
@@ -26,6 +32,15 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A misspelled marker (e.g. @pytest.mark.integraton) is an error, not a silent no-op.
+addopts = "--strict-markers"
 markers = [
     "integration: needs a running Ollama server and downloaded models",
+    "api: starts the RAG API server and tests it over HTTP",
+]
+filterwarnings = [
+    # PyMuPDF SWIG bindings emit these on Python 3.12; not actionable in our code.
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
 ]

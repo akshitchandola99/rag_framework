@@ -1,4 +1,5 @@
 import requests, json
+from pathlib import Path
 
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "llama3.2:3b"
@@ -29,6 +30,10 @@ def main() -> None:
     print("Tokens generated:", response_data["eval_count"])
     print("Total time (seconds):", round(response_data["total_duration"] / 1_000_000_000, 1))
     print(json.dumps(response_data,indent=4))
+    Path("response.json").write_text(
+        json.dumps(response_data,indent=4),
+        encoding = "utf-8"
+    )
 
 
 if __name__ == "__main__":

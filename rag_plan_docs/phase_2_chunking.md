@@ -2,6 +2,26 @@
 
 Oct 13, 2026 · @Akshit
 
+## Phase tracker
+
+Tick a phase only when its verification checks pass.
+
+- [ ] Phase 0 — Environment, Git, Ollama, hardware baseline ([separate doc](https://claude.ai/code/artifact/b32269ff-ce8f-4186-b984-8cf68f206b1b))
+- [ ] Phase 1 — Load documents with metadata ([separate doc](https://claude.ai/code/artifact/7df3b55e-6623-464f-8990-7106ec3af43f))
+- [ ] Phase 2 — Chunking (this doc)
+- [ ] Phase 3 — Local embeddings ([separate doc](https://claude.ai/code/artifact/a37f9484-2b02-439c-bcbd-42d9145c7a5a))
+- [ ] Phase 4 — Retrieval (numpy brute force, then Chroma) ([separate doc](https://claude.ai/code/artifact/5c0d6903-3508-4447-89e0-79e7f586b656))
+- [ ] Phase 5 — Golden v0 + hit@k / MRR ([separate doc](https://claude.ai/code/artifact/af02e615-699e-4072-b059-e6fd541a7eac))
+- [ ] Phase 6 — Grounded generation with Ollama ([separate doc](https://claude.ai/code/artifact/dc112016-b8cb-489d-b01d-377efa3083a1))
+- [ ] Phase 7 — Citations, refusal, errors, tracing ([separate doc](https://claude.ai/code/artifact/1e0d77c4-cdca-4be6-af3c-6ac45a522e8d))
+- [ ] Phase 8 — Consolidated pytest suite + robustness fixtures ([separate doc](https://claude.ai/code/artifact/8dd46bfa-af84-4bf8-a1bb-8537f5671950))
+- [ ] Phase 9 — Golden v1, human-verified
+- [ ] Phase 10 — RAGAS with a local judge
+- [ ] Phase 11 — DeepEval with Ollama + G-Eval
+- [ ] Phase 12 — Regression runner, thresholds, reports
+- [ ] Phase 13 — Evidence-driven improvement (+ optional UI)
+- [ ] Phase 14 — Documentation and portfolio polish
+
 **Goal of this phase:** split every `Page` from Phase 1 into smaller, overlapping pieces called **chunks**. Each chunk keeps its page's metadata and records exactly where it starts and ends in the page text. No LLM is needed, so Ollama can stay off. Previous phase: [Phase 1](https://claude.ai/code/artifact/7df3b55e-6623-464f-8990-7106ec3af43f). Tracker: [Phase 0 doc](https://claude.ai/code/artifact/b32269ff-ce8f-4186-b984-8cf68f206b1b).
 
 ## 2.1 Concepts
@@ -378,6 +398,93 @@ A few lines explained:
 - `chunks[-1]` is the last item of a list.
 - `assert found, f"..."`: the text after the comma is printed only if the assert fails. It tells you *which* quote was split, so a failure is easy to debug.
 - The `break` stops searching once a quote is found, which keeps this test fast even though it checks over 1,000 quotes.
+
+### QA role for this phase
+
+**How important is testing here: high.** Chunking decides what the retriever *can* find. Text lost in a gap, or a key sentence split across two chunks, causes a silent retrieval failure: nothing crashes, the answer is just wrong. Chunk size and overlap are also settings you will tune and compare in Phase 13, so their behaviour must be pinned down by tests now.
+
+**What to test**
+
+| What can go wrong | How to check it | Manual or automated | Covered by |
+| --- | --- | --- | --- |
+| Short pages give empty or duplicate chunks | Text shorter than a chunk gives exactly 1 chunk | Automated | `short_text_becomes_one_chunk` |
+| Code and docs disagree on how the window slides | Spans match the worked example in 2.1 | Automated | `sliding_window_spans_match_the_worked_example` |
+| Chunk offsets point at the wrong text | `page.text[start:end]` equals each chunk's text | Automated | `chunk_text_matches_page_text_at_its_offsets` |
+| Text is lost between chunks | No gaps; first chunk starts at 0, last ends at the end | Automated | `no_text_is_lost_between_chunks` |
+| Overlap is not what the setting says | Neighbours share exactly the overlap | Automated | `neighbouring_chunks_overlap_by_exactly_the_overlap` |
+| A short quote is split across 2 chunks | Every quote up to the overlap length sits whole in one chunk | Automated | `every_quote_up_to_overlap_length_sits_inside_one_chunk` |
+| Wrong citations or clashing IDs | Source and page copied; IDs unique | Automated | `chunks_copy_page_metadata_and_get_unique_ids` |
+| Bad settings freeze the program | Overlap ≥ chunk size is refused | Automated | `overlap_not_smaller_than_chunk_size_raises` |
+| Cuts land mid-word or mid-number ("2" / "7 days") | Read chunk edges by eye | Manual | Run it (2.5), Exercise Part A |
+| Chunks too small to mean anything, or too big to be specific | Compare chunk counts and content for several sizes | Manual | Exercise Part A |
+
+**Manual testing: how**
+
+1. Run chunking with the defaults (2.5). Read the start and end of each chunk: does it cut a word, a number or a sentence?
+2. Pick 2 key facts (for example "27 days"). Check that each fact sits whole inside at least one chunk.
+3. Re-run with other sizes and overlaps (Exercise Part A). Note the chunk count and whether the key facts stay whole.
+4. Decide which setting you would choose, and write down why. Phase 5 will check your guess with numbers.
+
+**Automated testing: how**
+
+- `tests/unit/test_chunking.py`: 8 unit tests, no model needed, run in under a second.
+- Most of them test *invariants*: rules that must hold for any input ("no text lost", "overlap is exact"), not one exact output. Invariant tests stay valid when you change chunk size later.
+- Pages are built in memory with `make_page()`, so the tests don't need real files.
+- Run them with the commands in 2.5, on every change to `chunking.py`.
+
+**Not covered yet:** quotes *longer* than the overlap can still be split. No test can prevent that; Phase 5 measures it instead, because a split quote shows up as a retrieval miss.
+
+**How a real system tests this phase, and how we test it now**
+
+In a real system, chunking happens inside the ingestion service, and you can't call `chunk_pages()` from outside. So QA asks for a *listing endpoint* that returns the stored chunks of a document. Then QA checks the chunks the same way we do, only through the API.
+
+| What is checked | In a real system | In our project now |
+| --- | --- | --- |
+| Chunks are visible | `GET /documents/{id}/chunks` returns text, offsets, page and size for each chunk | Call `chunk_pages()` |
+| No lost text | The chunks cover the whole document | `no_text_is_lost_between_chunks` |
+| Size | Measured in *tokens* (the pieces a model reads; about three quarters of a word). It must stay under the embedding model's limit (bge-small reads at most 512 tokens) | Measured in characters (500) |
+| Overlap | Checked against the saved settings | `neighbouring_chunks_overlap_by_exactly_the_overlap` |
+| Smart cuts | The splitter cuts at headings and paragraphs, and keeps a table in one piece | A fixed window that can cut mid-word |
+| Settings are tracked | Chunk size and overlap are saved with each index version. Changing them means a re-index and a new golden-set run | Two constants at the top of `chunking.py` |
+| Big documents | Time and memory for a 500-page PDF | Tiny documents |
+
+**Example: the same checks through a chunks API** (a sketch with made-up endpoints, not run; `document_id` and `page_length` would come from fixtures, which are shared setup values that pytest provides):
+
+```python
+import requests
+
+API_URL = "http://localhost:8000"
+MAX_TOKENS = 512
+
+
+# Fetch all chunks of one document, in text order.
+def get_chunks(document_id: str) -> list[dict]:
+    response = requests.get(f"{API_URL}/documents/{document_id}/chunks", timeout=30)
+    response.raise_for_status()
+    return response.json()["chunks"]
+
+
+# The chunks of a one-page document must cover its text with no gap.
+def test_chunks_cover_the_whole_page(document_id, page_length):
+    chunks = get_chunks(document_id)
+
+    assert chunks[0]["start"] == 0
+    assert chunks[-1]["end"] == page_length
+    for previous_chunk, next_chunk in zip(chunks, chunks[1:]):
+        assert next_chunk["start"] <= previous_chunk["end"]
+
+
+# No chunk may be longer than the embedding model can read.
+def test_no_chunk_is_too_long_for_the_embedding_model(document_id):
+    for chunk in get_chunks(document_id):
+        assert chunk["token_count"] <= MAX_TOKENS
+```
+
+- **Test 1** is our `no_text_is_lost_between_chunks` test, run on stored data. The first chunk starts at 0, the last ends at the end, and each chunk starts before the previous one ends, so there is no gap.
+- **Test 2** is new, and only real systems need it. The embedding model silently ignores text after its token limit. A too-long chunk would lose its end, and nothing would crash.
+- Our chunks are 500 characters, about 125 tokens, far under 512. That is why Phase 2 has no token test. A real system with bigger chunks must have one.
+
+**The gap, in one line:** the checks are the same (no gaps, right overlap, metadata kept). A real system adds token limits, smarter cuts, saved settings and big-document speed.
 
 ## 2.5 Run it
 

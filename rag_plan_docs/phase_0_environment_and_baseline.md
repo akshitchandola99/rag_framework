@@ -8,15 +8,15 @@ A phase-by-phase build log for the local RAG app and its evaluation framework; e
 
 Tick a phase only when its verification checks pass.
 
-- [ ] Phase 0 — Environment, Git, Ollama, hardware baseline
+- [ ] Phase 0 — Environment, Git, Ollama, hardware baseline (this doc)
 - [ ] Phase 1 — Load documents with metadata ([separate doc](https://claude.ai/code/artifact/7df3b55e-6623-464f-8990-7106ec3af43f))
 - [ ] Phase 2 — Chunking ([separate doc](https://claude.ai/code/artifact/4b5e335a-21aa-435a-98c4-3d6105208c7f))
 - [ ] Phase 3 — Local embeddings ([separate doc](https://claude.ai/code/artifact/a37f9484-2b02-439c-bcbd-42d9145c7a5a))
-- [ ] Phase 4 — Retrieval (numpy brute force, then Chroma)
-- [ ] Phase 5 — Golden v0 + hit@k / MRR
-- [ ] Phase 6 — Grounded generation with Ollama
-- [ ] Phase 7 — Citations, refusal, errors, tracing
-- [ ] Phase 8 — Consolidated pytest suite + robustness fixtures
+- [ ] Phase 4 — Retrieval (numpy brute force, then Chroma) ([separate doc](https://claude.ai/code/artifact/5c0d6903-3508-4447-89e0-79e7f586b656))
+- [ ] Phase 5 — Golden v0 + hit@k / MRR ([separate doc](https://claude.ai/code/artifact/af02e615-699e-4072-b059-e6fd541a7eac))
+- [ ] Phase 6 — Grounded generation with Ollama ([separate doc](https://claude.ai/code/artifact/dc112016-b8cb-489d-b01d-377efa3083a1))
+- [ ] Phase 7 — Citations, refusal, errors, tracing ([separate doc](https://claude.ai/code/artifact/1e0d77c4-cdca-4be6-af3c-6ac45a522e8d))
+- [ ] Phase 8 — Consolidated pytest suite + robustness fixtures ([separate doc](https://claude.ai/code/artifact/8dd46bfa-af84-4bf8-a1bb-8537f5671950))
 - [ ] Phase 9 — Golden v1, human-verified
 - [ ] Phase 10 — RAGAS with a local judge
 - [ ] Phase 11 — DeepEval with Ollama + G-Eval
@@ -923,6 +923,101 @@ def test_generator_model_is_installed():
     model_names = env_check.list_installed_models()
     assert env_check.GENERATOR_MODEL in model_names
 ```
+
+#### QA role for this phase
+
+**How important is testing here: medium, but it comes first.** Phase 0 has no RAG logic to test. Its job is to give every later test a stable, known environment. If Python, Ollama or the model is wrong, every later result is meaningless, so check this before you trust any other number.
+
+**What to test**
+
+| What can go wrong | How to check it | Manual or automated | Covered by |
+| --- | --- | --- | --- |
+| Wrong Python version | Version is 3.12 or newer | Automated | `test_python_version_meets_minimum` |
+| Python runs under Rosetta (Intel mode), so it is slow and some packages break | Architecture is `arm64` | Automated | `test_running_on_apple_silicon` |
+| Ollama is not running, or the generator model is missing | `llama3.2:3b` is in Ollama's model list | Automated (integration) | `test_generator_model_is_installed` |
+| A typo in the model name fails without a clear error | A wrong tag gives a clear `HTTPError`, not a `KeyError` | Manual | "requests vs urllib" in 0.2a |
+| The laptop is too slow or short of memory for eval runs | Tokens per second and memory pressure are recorded | Manual | `env_check` output, Activity Monitor (0.7) |
+| The same prompt gives different answers | Run one prompt 3 times and compare | Manual | Exercise 0.7 |
+| The model answers from its own memory instead of the context | With a "use only the context" rule, an off-context question gets "I don't know" | Manual | Try 3 mini exercise |
+
+**Manual testing: how**
+
+1. Run `env_check` (0.5) and write down tokens per second and load time. This is your speed baseline.
+2. Open Activity Monitor while the model answers. Note the memory pressure colour and how much memory Ollama uses.
+3. Send the same prompt 3 times at the default temperature. Mark which parts changed: wording only, or facts too.
+4. Ask a question the context cannot answer. Pass = the model refuses; fail = it invents an answer.
+
+**Automated testing: how**
+
+- `tests/unit/test_env_check.py`: 2 unit tests, no Ollama needed, run in under a second.
+- `tests/integration/test_ollama.py`: 1 integration test, needs Ollama running, so it has `@pytest.mark.integration`.
+- Both run with the commands in 0.5. Unit tests run on every change; integration tests run before each commit.
+
+**Not covered yet:** speed is only printed, not asserted, because it changes from run to run and machine to machine. A pass/fail limit on speed would make a *flaky* test (one that fails at random). Run-to-run differences are measured properly in Phase 12.
+
+**How a real system tests this phase, and how we test it now**
+
+In a real system, "environment" means the running service and everything it needs: servers, models, settings. QA checks it after every deploy with a *smoke test*: a few quick checks that answer "is it alive and set up right?". Ollama is a real API, so the example below is real, and I ran it on your machine.
+
+| What is checked | In a real system | In our project now |
+| --- | --- | --- |
+| Service is alive | A health endpoint (`GET /health`) that a monitor calls every few seconds | You run `env_check` by hand |
+| Dependencies are ready | A `/ready` endpoint says the database, vector store and model server all answer | `env_check` prints the result; 3 tests |
+| Right model and version | The deploy checks the model name and its digest (a fingerprint of the exact model file) | One test: `llama3.2:3b` is in the model list |
+| Versions are fixed | Locked package versions, a container image, settings kept in Git | `uv.lock` and `pyproject.toml` |
+| Speed and memory | Load tests with many users at once, p95 time (the time 95 out of 100 requests stay under), memory graphs, alerts | One request, one tokens-per-second number, read by you |
+| Works on a clean machine | A pipeline (CI) builds and tests from zero on every change | Your laptop only |
+
+**Example: the same checks through Ollama's real API** (ran on your machine):
+
+```python
+import requests
+
+OLLAMA_URL = "http://localhost:11434"
+EXPECTED_MODEL = "llama3.2:3b"
+MIN_TOKENS_PER_SECOND = 5
+
+
+# Check that the Ollama server answers and reports its version.
+def test_server_is_up():
+    response = requests.get(f"{OLLAMA_URL}/api/version", timeout=10)
+    response.raise_for_status()
+    assert "version" in response.json()
+
+
+# Check that the generator model is installed.
+def test_generator_model_is_installed():
+    response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10)
+    response.raise_for_status()
+    model_names = []
+    for model in response.json()["models"]:
+        model_names.append(model["name"])
+    assert EXPECTED_MODEL in model_names
+
+
+# Check that one short answer arrives and is not too slow.
+def test_generation_is_not_too_slow():
+    request_body = {
+        "model": EXPECTED_MODEL,
+        "prompt": "Say hello in one short sentence.",
+        "stream": False,
+        "options": {"temperature": 0},
+    }
+    response = requests.post(f"{OLLAMA_URL}/api/generate", json=request_body, timeout=120)
+    response.raise_for_status()
+    data = response.json()
+    tokens_per_second = data["eval_count"] / (data["eval_duration"] / 1000000000)
+    assert data["response"].strip() != ""
+    assert tokens_per_second > MIN_TOKENS_PER_SECOND
+```
+
+- `/api/version` checks the server is up.
+- `/api/tags` checks the model list contains our model.
+- `/api/generate` checks a real answer arrives. `eval_count` (tokens made) divided by `eval_duration` (nanoseconds) gives the speed.
+- The speed limit is a loose *floor*, not the expected speed, because speed changes from run to run. A floor still catches "the model is stuck or swapping to disk".
+- **Result on your machine:** `3 passed in 9.12s`, with 7.8 tokens per second in that first run. A second run took 1.42s, because the model was already loaded.
+
+**The gap, in one line:** real teams run these checks automatically after every deploy and watch them all day. We run them by hand when we start work.
 
 ### 0.5 Run it
 

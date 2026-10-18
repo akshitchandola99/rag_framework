@@ -2,6 +2,26 @@
 
 Oct 13, 2026 · @Akshit
 
+## Phase tracker
+
+Tick a phase only when its verification checks pass.
+
+- [ ] Phase 0 — Environment, Git, Ollama, hardware baseline ([separate doc](https://claude.ai/code/artifact/b32269ff-ce8f-4186-b984-8cf68f206b1b))
+- [ ] Phase 1 — Load documents with metadata (this doc)
+- [ ] Phase 2 — Chunking ([separate doc](https://claude.ai/code/artifact/4b5e335a-21aa-435a-98c4-3d6105208c7f))
+- [ ] Phase 3 — Local embeddings ([separate doc](https://claude.ai/code/artifact/a37f9484-2b02-439c-bcbd-42d9145c7a5a))
+- [ ] Phase 4 — Retrieval (numpy brute force, then Chroma) ([separate doc](https://claude.ai/code/artifact/5c0d6903-3508-4447-89e0-79e7f586b656))
+- [ ] Phase 5 — Golden v0 + hit@k / MRR ([separate doc](https://claude.ai/code/artifact/af02e615-699e-4072-b059-e6fd541a7eac))
+- [ ] Phase 6 — Grounded generation with Ollama ([separate doc](https://claude.ai/code/artifact/dc112016-b8cb-489d-b01d-377efa3083a1))
+- [ ] Phase 7 — Citations, refusal, errors, tracing ([separate doc](https://claude.ai/code/artifact/1e0d77c4-cdca-4be6-af3c-6ac45a522e8d))
+- [ ] Phase 8 — Consolidated pytest suite + robustness fixtures ([separate doc](https://claude.ai/code/artifact/8dd46bfa-af84-4bf8-a1bb-8537f5671950))
+- [ ] Phase 9 — Golden v1, human-verified
+- [ ] Phase 10 — RAGAS with a local judge
+- [ ] Phase 11 — DeepEval with Ollama + G-Eval
+- [ ] Phase 12 — Regression runner, thresholds, reports
+- [ ] Phase 13 — Evidence-driven improvement (+ optional UI)
+- [ ] Phase 14 — Documentation and portfolio polish
+
 **Goal of this phase:** turn every file in `data/raw/` into a list of **pages**, where each page knows its text *and* where it came from (file name, page number, file type). No LLM is needed in this phase, so Ollama can stay off. Previous phase: Phase 0 [doc](https://claude.ai/code/artifact/b32269ff-ce8f-4186-b984-8cf68f206b1b).
 
 ## 1.1 Concepts
@@ -321,6 +341,12 @@ def load_pdf(file_path: Path) -> list[Page]:
     except pymupdf.FileDataError as error:
         raise ValueError(f"{file_path.name}: not a readable PDF ({error})") from error
 
+    # A password-protected PDF opens, but its pages can't be read. Without this check,
+    # PyMuPDF's own error ("document closed or encrypted") would not name the file.
+    if pdf_document.needs_pass:
+        pdf_document.close()
+        raise ValueError(f"{file_path.name}: PDF is password-protected")
+
     pages = []
     with pdf_document:
         for page_index, pdf_page in enumerate(pdf_document):
@@ -420,6 +446,7 @@ if __name__ == "__main__":
   - We return a *list* even though it holds one page, so every loader has the same output shape. Code that calls a loader never has to care which one ran.
 - **`load_pdf(file_path)`** — input: a PDF location. Output: one `Page` per PDF page that has text.
   - `pymupdf.open(file_path)` opens the PDF. A broken file makes it raise `FileDataError` (an empty 0-byte file raises `EmptyFileError`, a kind of `FileDataError`). We turn both into a `ValueError` with the file name.
+  - `pdf_document.needs_pass` is `True` when the PDF is password-protected. Such a file opens without an error, but reading its pages fails with PyMuPDF's own message, `document closed or encrypted`, which doesn't say which file. So we check first, close the file, and raise `ValueError("<file>: PDF is password-protected")`. This check was added after a test on 16 Oct 2026 showed the missing file name.
   - `with pdf_document:` closes the PDF automatically when the block ends, even if an error happens inside.
   - `enumerate(pdf_document)` walks through the pages and gives each one a counter, `page_index`, starting at **0**. People count pages from **1**, so `page_number = page_index + 1`.
   - `pdf_page.get_text()` extracts that page's text as one string, with `\n` at each line end.
@@ -441,7 +468,7 @@ if __name__ == "__main__":
 
 ## 1.4 Tests
 
-Nine unit tests: one per file type, one for page numbering, and one for each kind of bad file. They're all **unit** tests: no Ollama, no network, done in under a second. This phase has no integration test, because nothing here talks to a model.
+Fifteen unit tests. Nine cover the basics: one per file type, one for page numbering, and one for each kind of bad file. Six more (added on 16 Oct 2026) pin down how complex PDF content is handled today: links, tables, text inside images, scanned pages, password protection, and headers and footers. They're all **unit** tests: no Ollama, no network, done in under a second. This phase has no integration test, because nothing here talks to a model.
 
 Two new pytest tools appear here:
 
@@ -455,10 +482,13 @@ Create `tests/unit/test_loaders.py`:
 ```python
 from pathlib import Path
 
+import pymupdf
 import pytest
 
 from ragqa import loaders
 from ragqa.make_sample_pdf import write_pdf
+
+IMAGE_WORDS = "APPROVAL NEEDED 10 DAYS BEFORE"
 
 
 # A .md file becomes one page with correct metadata.
@@ -558,6 +588,129 @@ def test_folder_loading_skips_bad_and_hidden_files(tmp_path: Path):
     assert len(pages) == 1
     assert pages[0].source == "good.md"
     assert len(skipped_files) == 2
+
+
+# The tests below pin down how today's loader treats complex PDF content.
+# They describe current behaviour, good or bad, so any change to it is noticed on purpose.
+
+
+# Make a small picture (a pixmap) that shows some words, like a scanned figure.
+def make_picture_of_words(words: str) -> pymupdf.Pixmap:
+    picture_document = pymupdf.open()
+    picture_page = picture_document.new_page(width=300, height=80)
+    picture_page.insert_text((10, 40), words, fontsize=14)
+    picture = picture_page.get_pixmap()
+    picture_document.close()
+    return picture
+
+
+# A link keeps its visible words; the hidden URL behind it is dropped. A typed-out URL is kept.
+def test_pdf_link_keeps_visible_text_but_drops_hidden_url(tmp_path: Path):
+    file_path = tmp_path / "link.pdf"
+    pdf_document = pymupdf.open()
+    pdf_page = pdf_document.new_page()
+    pdf_page.insert_text((72, 72), "Read the full policy on the intranet.", fontsize=12)
+    link = {"kind": pymupdf.LINK_URI, "from": pymupdf.Rect(72, 60, 300, 76), "uri": "https://intranet.example/policy"}
+    pdf_page.insert_link(link)
+    pdf_page.insert_text((72, 100), "Or visit https://brightwater.example/help for help.", fontsize=12)
+    pdf_document.save(file_path)
+    pdf_document.close()
+
+    text = loaders.load_document(file_path)[0].text
+
+    assert "Read the full policy on the intranet." in text
+    assert "https://intranet.example/policy" not in text
+    assert "https://brightwater.example/help" in text
+
+
+# A table comes out one cell per line, row by row: the words stay, the rows and columns don't.
+def test_pdf_table_comes_out_one_cell_per_line(tmp_path: Path):
+    file_path = tmp_path / "table.pdf"
+    rows = [
+        ["City", "Hotel limit", "Meal allowance"],
+        ["London", "190 euros", "45 euros"],
+        ["Madrid", "140 euros", "45 euros"],
+    ]
+    pdf_document = pymupdf.open()
+    pdf_page = pdf_document.new_page()
+    for row_index, row in enumerate(rows):
+        for column_index, cell in enumerate(row):
+            x = 72 + column_index * 150
+            y = 100 + row_index * 25
+            pdf_page.draw_rect(pymupdf.Rect(x - 4, y - 16, x + 146, y + 9))
+            pdf_page.insert_text((x, y), cell, fontsize=11)
+    pdf_document.save(file_path)
+    pdf_document.close()
+
+    text = loaders.load_document(file_path)[0].text
+
+    expected_lines = []
+    for row in rows:
+        for cell in row:
+            expected_lines.append(cell)
+    assert text.splitlines() == expected_lines
+
+
+# Words inside an image are silently lost; the normal text around the image is kept.
+def test_pdf_text_inside_an_image_is_ignored(tmp_path: Path):
+    file_path = tmp_path / "figure.pdf"
+    pdf_document = pymupdf.open()
+    pdf_page = pdf_document.new_page()
+    pdf_page.insert_text((72, 72), "Figure 1 shows the travel approval steps.", fontsize=12)
+    pdf_page.insert_image(pymupdf.Rect(72, 90, 372, 170), pixmap=make_picture_of_words(IMAGE_WORDS))
+    pdf_document.save(file_path)
+    pdf_document.close()
+
+    text = loaders.load_document(file_path)[0].text
+
+    assert "Figure 1 shows the travel approval steps." in text
+    assert IMAGE_WORDS not in text
+
+
+# A page that is only a picture (like a scanned page) has no text, so the PDF is refused.
+def test_pdf_with_only_an_image_raises(tmp_path: Path):
+    file_path = tmp_path / "scanned.pdf"
+    pdf_document = pymupdf.open()
+    pdf_page = pdf_document.new_page()
+    pdf_page.insert_image(pymupdf.Rect(72, 90, 372, 170), pixmap=make_picture_of_words(IMAGE_WORDS))
+    pdf_document.save(file_path)
+    pdf_document.close()
+
+    with pytest.raises(ValueError, match="scanned.pdf: PDF has no extractable text"):
+        loaders.load_document(file_path)
+
+
+# A password-protected PDF is refused with a clear error that names the file.
+def test_password_protected_pdf_raises_with_file_name(tmp_path: Path):
+    file_path = tmp_path / "salaries.pdf"
+    pdf_document = pymupdf.open()
+    pdf_page = pdf_document.new_page()
+    pdf_page.insert_text((72, 72), "Secret salary bands.", fontsize=12)
+    pdf_document.save(file_path, encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="secret", owner_pw="owner")
+    pdf_document.close()
+
+    with pytest.raises(ValueError, match="salaries.pdf: PDF is password-protected"):
+        loaders.load_document(file_path)
+
+
+# A header and a footer repeat on every page; the loader keeps them on every page.
+def test_pdf_header_and_footer_repeat_on_every_page(tmp_path: Path):
+    file_path = tmp_path / "report.pdf"
+    pdf_document = pymupdf.open()
+    for page_number in range(1, 3):
+        pdf_page = pdf_document.new_page()
+        pdf_page.insert_text((72, 40), "Brightwater Robotics - CONFIDENTIAL", fontsize=9)
+        pdf_page.insert_text((72, 120), f"Body text of page {page_number}.", fontsize=12)
+        pdf_page.insert_text((72, 800), f"Page {page_number} of 2", fontsize=9)
+    pdf_document.save(file_path)
+    pdf_document.close()
+
+    pages = loaders.load_document(file_path)
+
+    assert len(pages) == 2
+    for page in pages:
+        assert page.text.startswith("Brightwater Robotics - CONFIDENTIAL")
+        assert f"Page {page.page} of 2" in page.text
 ```
 
 **What the tests check, and why each matters**
@@ -573,6 +726,16 @@ def test_folder_loading_skips_bad_and_hidden_files(tmp_path: Path):
 | `corrupted_pdf_raises` | A fake or damaged PDF gives a clear `ValueError` | The whole run would crash on one bad file |
 | `unsupported_file_type_raises` | `.docx` is refused with a clear reason | Unknown files would be ignored without a word |
 | `folder_loading_skips_bad_and_hidden_files` | 1 good page, 2 skip reasons, `.gitkeep` ignored | One bad file would stop indexing the folder |
+| `pdf_link_keeps_visible_text_but_drops_hidden_url` | The link's words stay; the hidden URL is gone; a URL typed out as text stays | A change in link handling, good or bad, would go unnoticed |
+| `pdf_table_comes_out_one_cell_per_line` | The table's text is exactly one cell per line, row by row | Cells silently reordered or merged, breaking facts like "London: 190 euros" |
+| `pdf_text_inside_an_image_is_ignored` | The caption stays; the words inside the image are not in the text | Nobody would know that facts inside images are lost |
+| `pdf_with_only_an_image_raises` | A page that is only a picture is refused with "no extractable text" | A scanned PDF loading as zero pages without a word |
+| `password_protected_pdf_raises_with_file_name` | `ValueError: salaries.pdf: PDF is password-protected` | An unclear error with no file name (the bug this test found) |
+| `pdf_header_and_footer_repeat_on_every_page` | The header and footer are kept on both pages | Removing headers and footers (or losing body text) without anyone noticing |
+
+**The last six tests are *characterization tests*.** They don't say what the loader *should* do; they pin down what it *does* today, including the parts we don't like: a lost URL, a flattened table, words inside images ignored. If someone later improves table handling, the table test fails on purpose, and they update it knowingly instead of by accident. Only the password test describes a fix: it failed first (`Regex pattern did not match`, because the old message had no file name), then passed after `load_pdf` got its `needs_pass` check.
+
+These tests build their PDFs inside the test with PyMuPDF: `insert_text` writes words, `insert_link` adds a hidden link, `draw_rect` draws table lines, `insert_image` places a picture, and `save(..., encryption=..., user_pw=...)` sets a password. `make_picture_of_words` draws words onto a picture (a *pixmap*), which is what a scanned figure is. No sample files are needed, so the tests stay fast and never touch `data/raw/`.
 
 In the code, `tmp_path / "handbook.md"` uses `/` to join a folder and a file name into one `Path`. `b"..."` is a *bytes* value: raw bytes written as-is, which lets us create a file that isn't valid UTF-8 on purpose.
 
@@ -586,6 +749,113 @@ filterwarnings = [
 
 - **What it does:** tells pytest to ignore `DeprecationWarning`s whose message starts with "builtin type Swig" (or "swig").
 - **The parts:** each entry is `action:message:category`. `ignore` is the action; `builtin type [Ss]wig` is the start of the message (`[Ss]` means "capital or small s"); `DeprecationWarning` is the warning type. Other warnings still show, which is what we want.
+
+### QA role for this phase
+
+**How important is testing here: high.** Loading is the first stage of the pipeline. Text lost here can never be retrieved, and a wrong page number makes every later citation wrong. Worse, a loading bug shows up later as a "bad retrieval" or a "bad answer", so it is expensive to trace back. Catch it here.
+
+**What to test**
+
+| What can go wrong | How to check it | Manual or automated | Covered by |
+| --- | --- | --- | --- |
+| Wrong or missing metadata (source, page, type) | All fields are filled correctly | Automated | `markdown_file_becomes_one_page_with_metadata` |
+| Text changed while loading | Loaded text equals the file, character for character | Automated | `txt_file_is_loaded` |
+| Page numbers shift after a blank page | Pages 1 and 3 stay `[1, 3]` | Automated | `pdf_keeps_real_page_numbers_and_skips_blank_pages` |
+| Empty, wrongly encoded, scanned (no text), corrupted, password-protected or unsupported files | Each raises a clear `ValueError` naming the file | Automated | the seven `..._raises` tests |
+| One bad file stops the whole folder | Bad files are skipped with a reason; good files still load | Automated | `folder_loading_skips_bad_and_hidden_files` |
+| PDF text comes out garbled: broken words, mixed-up columns, headers inside sentences | Compare the printed text with the PDF on screen | Manual | Run it (1.5) |
+| Special characters break (é, €, bullets, quotes) | Look for `?` or odd symbols in the preview | Manual | Run it (1.5) |
+| Your real sample files load as expected | Page counts and sources match the files | Automated (you write it) | Exercise Part B |
+
+**Manual testing: how**
+
+1. Run the loader (1.5) and open the PDF next to the output.
+2. Pick 3 sentences from the PDF: one at the start of a page, one in the middle, one at the end. Find each one in the printed text.
+3. Check that the page number printed for each sentence is the page you saw it on.
+4. Look at the line breaks: PDF text keeps the PDF's line breaks, so later matching must ignore them (Phase 5 does).
+5. Add bad files (Exercise Part A). Pass = each one shows a `SKIPPED` reason and the run still finishes.
+
+**Automated testing: how**
+
+- `tests/unit/test_loaders.py`: 9 unit tests, no Ollama or model needed, run in under a second.
+- Test data is built inside each test with `tmp_path` (a temporary folder pytest makes and deletes), so tests never depend on your real `data/raw/` files.
+- The test cases follow classic test design: one per file type (*equivalence classes*: groups of inputs that behave the same) and one per edge case (empty, blank pages, broken bytes).
+- Run them with the commands in 1.5, on every change to `loaders.py`.
+
+**Not covered yet:** no test checks that *every* word of a real PDF was extracted; links, tables, text in images, scanned pages and headers and footers are now pinned to today's behaviour by characterization tests (see the QA map), but multi-column layouts, footnotes, words split by hyphens and rotated pages are still untested. Phase 5 adds a partial check: every golden-set quote must exist in the loaded text.
+
+**How a real system tests this phase, and how we test it now**
+
+In a real system, loading lives inside an *ingestion service*: you upload a file over an API, and the service loads it, often in the background. QA tests it through that API. The checks are the same as ours; only the door is different.
+
+| What is checked | In a real system | In our project now |
+| --- | --- | --- |
+| Upload is accepted | `POST /documents` returns status 201 ("created") and an ID | Call `load_document(file)` |
+| Metadata is correct | `GET /documents/{id}` returns source, page count, file type, owner | `assert` on the fields of `Page` |
+| Bad files | A clear 4xx error (400, 415 or 422), never a 500 | A `ValueError` that names the file |
+| Big and slow files | A size limit, and a background job with a status: `processing`, then `ready` or `failed` | Our files are tiny and load at once |
+| Duplicates | The same file uploaded twice does not make a second document | Not tested in Phase 1 (Phase 4 tests duplicate chunks) |
+| Who owns it | Each document carries owner or permission tags | Not in our project |
+| Many sources | Connectors read SharePoint, Confluence or Drive, and pick up edits and deletes | One local folder, `data/raw/` |
+| Scanned PDFs | OCR (turning page images into text) is tried, and failures are reported | A scanned PDF is rejected by the blank-pages test |
+
+A status code starting with 4 means the caller made a mistake. One starting with 5 means the server failed. A good API answers bad input with a 4xx.
+
+**Example: the same checks through an upload API** (a sketch with made-up endpoints, not run):
+
+```python
+import time
+
+import requests
+
+API_URL = "http://localhost:8000"
+
+
+# Upload a file and return the HTTP response.
+def upload(file_name: str, content: bytes, content_type: str) -> requests.Response:
+    files = {"file": (file_name, content, content_type)}
+    return requests.post(f"{API_URL}/documents", files=files, timeout=30)
+
+
+# Wait until the background job is ready or failed, then return its status.
+def wait_for_job(job_id: str) -> str:
+    for _ in range(30):
+        response = requests.get(f"{API_URL}/jobs/{job_id}", timeout=10)
+        response.raise_for_status()
+        status = response.json()["status"]
+        if status in ("ready", "failed"):
+            return status
+        time.sleep(1)
+    raise TimeoutError(f"job {job_id} did not finish")
+
+
+# A good Markdown file becomes one page with the right metadata.
+def test_markdown_upload_has_correct_metadata():
+    reply = upload("handbook.md", b"# Leave\n\nAnnual leave is 27 days.", "text/markdown")
+    assert reply.status_code == 201
+    assert wait_for_job(reply.json()["job_id"]) == "ready"
+
+    document_id = reply.json()["id"]
+    details = requests.get(f"{API_URL}/documents/{document_id}", timeout=10)
+    details.raise_for_status()
+    document = details.json()
+    assert document["source"] == "handbook.md"
+    assert document["page_count"] == 1
+    assert document["file_type"] == "md"
+
+
+# A fake PDF is refused with a client error, not a server crash.
+def test_corrupted_pdf_is_rejected_cleanly():
+    reply = upload("broken.pdf", b"this is not a pdf", "application/pdf")
+    assert 400 <= reply.status_code < 500
+    assert "broken.pdf" in reply.json()["error"]
+```
+
+- **Test 1** checks the same four facts as our unit test (source, page count, file type, text kept), plus what only a real API has: the 201 status and the background job.
+- `wait_for_job` *polls*: it asks again every second until the job ends. A fixed `sleep` would make the test either slow or flaky.
+- **Test 2** is our `corrupted_pdf_raises` test seen from outside: a clear 4xx and the file name in the message, not a 500.
+
+**The gap, in one line:** our tests check the loading logic. A real QA team also checks what surrounds it: status codes, limits, background jobs, duplicates and who owns the document.
 
 ## 1.5 Run it
 
@@ -663,20 +933,26 @@ Those mid-sentence `\n` breaks are normal for PDFs: the PDF stores lines, not se
 **Expected output of the tests** (real, shortened):
 
 ```text
-tests/unit/test_loaders.py::test_markdown_file_becomes_one_page_with_metadata PASSED [ 11%]
-tests/unit/test_loaders.py::test_txt_file_is_loaded PASSED               [ 22%]
-tests/unit/test_loaders.py::test_pdf_keeps_real_page_numbers_and_skips_blank_pages PASSED [ 33%]
-tests/unit/test_loaders.py::test_empty_text_file_raises PASSED           [ 44%]
-tests/unit/test_loaders.py::test_non_utf8_text_file_raises PASSED        [ 55%]
-tests/unit/test_loaders.py::test_pdf_with_only_blank_pages_raises PASSED [ 66%]
-tests/unit/test_loaders.py::test_corrupted_pdf_raises PASSED             [ 77%]
-tests/unit/test_loaders.py::test_unsupported_file_type_raises PASSED     [ 88%]
-tests/unit/test_loaders.py::test_folder_loading_skips_bad_and_hidden_files PASSED [100%]
+tests/unit/test_loaders.py::test_markdown_file_becomes_one_page_with_metadata PASSED [  6%]
+tests/unit/test_loaders.py::test_txt_file_is_loaded PASSED               [ 13%]
+tests/unit/test_loaders.py::test_pdf_keeps_real_page_numbers_and_skips_blank_pages PASSED [ 20%]
+tests/unit/test_loaders.py::test_empty_text_file_raises PASSED           [ 26%]
+tests/unit/test_loaders.py::test_non_utf8_text_file_raises PASSED        [ 33%]
+tests/unit/test_loaders.py::test_pdf_with_only_blank_pages_raises PASSED [ 40%]
+tests/unit/test_loaders.py::test_corrupted_pdf_raises PASSED             [ 46%]
+tests/unit/test_loaders.py::test_unsupported_file_type_raises PASSED     [ 53%]
+tests/unit/test_loaders.py::test_folder_loading_skips_bad_and_hidden_files PASSED [ 60%]
+tests/unit/test_loaders.py::test_pdf_link_keeps_visible_text_but_drops_hidden_url PASSED [ 66%]
+tests/unit/test_loaders.py::test_pdf_table_comes_out_one_cell_per_line PASSED [ 73%]
+tests/unit/test_loaders.py::test_pdf_text_inside_an_image_is_ignored PASSED [ 80%]
+tests/unit/test_loaders.py::test_pdf_with_only_an_image_raises PASSED    [ 86%]
+tests/unit/test_loaders.py::test_password_protected_pdf_raises_with_file_name PASSED [ 93%]
+tests/unit/test_loaders.py::test_pdf_header_and_footer_repeat_on_every_page PASSED [100%]
 
-============================== 9 passed in 0.48s ===============================
+============================== 15 passed in 0.20s ==============================
 ```
 
-If you also have the Phase 0 unit tests in `tests/unit/`, they run too, so your total will be higher than 9.
+If you also have the Phase 0 unit tests in `tests/unit/`, they run too, so your total will be higher than 15.
 
 ## 1.6 Common errors and debugging
 
@@ -691,6 +967,7 @@ The `SKIPPED` and `Folder not found` messages below are real outputs from my tes
 | `SKIPPED menu.txt: not valid UTF-8 text ('utf-8' codec can't decode byte 0xe9 ...)` | The file was saved in an older encoding (for example Latin-1, where `é` is byte `0xe9`) | Open it in VS Code, click the encoding name at the bottom right, choose **Save with Encoding → UTF-8** |
 | `SKIPPED corrupted.pdf: not a readable PDF (Failed to open file ... as type pdf.)` | The file is damaged, or isn't really a PDF (only its name ends in `.pdf`) | Open it in Preview. If Preview fails too, get a fresh copy |
 | `SKIPPED x.pdf: PDF has no extractable text (empty or scanned)` | The PDF holds pictures of pages, not text | Use a PDF with real text. OCR is out of scope for this project |
+| `SKIPPED salaries.pdf: PDF is password-protected` | The PDF needs a password to open its pages | Ask the owner for an unprotected copy, or open it in Preview and export it again as a PDF without a password |
 | `SKIPPED empty.md: file has no text` | The file is empty or only spaces | Add content, or delete the file |
 | `SKIPPED notes.docx: unsupported file type '.docx'` | We only load `.pdf`, `.md` and `.txt` | Export it as PDF, or save as `.txt` |
 | Character counts differ from section 1.5 | Your sample text differs from the guide (typo, extra blank line) | Fine for learning; just know your golden-set quotes must match *your* text |
@@ -781,7 +1058,7 @@ Hints: copy the loop from `test_pdf_keeps_real_page_numbers_and_skips_blank_page
 
 - [ ] `uv run python -m ragqa.make_sample_pdf` writes the 4-page PDF
 - [ ] `uv run python -m ragqa.loaders` prints "Loaded 5 pages from 3 files in /Users/nowgg/Automation/rag\_framework/data/raw", with the PDF going from page 2 to page 4
-- [ ] `uv run pytest -m "not integration" -v` passes all loader tests (9, or 10 with your own) with no warnings
+- [ ] `uv run pytest -m "not integration" -v` passes all loader tests (15, or 16 with your own) with no warnings
 - [ ] `uv run python -m ragqa.loaders data/adversarial` shows three SKIPPED lines and no crash
 - [ ] You can explain why blank pages are skipped but still counted
 - [ ] Your work is committed: `git add .` then `git commit -m "Phase 1: load documents with metadata"`, then `git push`

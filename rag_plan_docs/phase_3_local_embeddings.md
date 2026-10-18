@@ -2,6 +2,26 @@
 
 Oct 14, 2026 · @Akshit
 
+## Phase tracker
+
+Tick a phase only when its verification checks pass.
+
+- [ ] Phase 0 — Environment, Git, Ollama, hardware baseline ([separate doc](https://claude.ai/code/artifact/b32269ff-ce8f-4186-b984-8cf68f206b1b))
+- [ ] Phase 1 — Load documents with metadata ([separate doc](https://claude.ai/code/artifact/7df3b55e-6623-464f-8990-7106ec3af43f))
+- [ ] Phase 2 — Chunking ([separate doc](https://claude.ai/code/artifact/4b5e335a-21aa-435a-98c4-3d6105208c7f))
+- [ ] Phase 3 — Local embeddings (this doc)
+- [ ] Phase 4 — Retrieval (numpy brute force, then Chroma) ([separate doc](https://claude.ai/code/artifact/5c0d6903-3508-4447-89e0-79e7f586b656))
+- [ ] Phase 5 — Golden v0 + hit@k / MRR ([separate doc](https://claude.ai/code/artifact/af02e615-699e-4072-b059-e6fd541a7eac))
+- [ ] Phase 6 — Grounded generation with Ollama ([separate doc](https://claude.ai/code/artifact/dc112016-b8cb-489d-b01d-377efa3083a1))
+- [ ] Phase 7 — Citations, refusal, errors, tracing ([separate doc](https://claude.ai/code/artifact/1e0d77c4-cdca-4be6-af3c-6ac45a522e8d))
+- [ ] Phase 8 — Consolidated pytest suite + robustness fixtures ([separate doc](https://claude.ai/code/artifact/8dd46bfa-af84-4bf8-a1bb-8537f5671950))
+- [ ] Phase 9 — Golden v1, human-verified
+- [ ] Phase 10 — RAGAS with a local judge
+- [ ] Phase 11 — DeepEval with Ollama + G-Eval
+- [ ] Phase 12 — Regression runner, thresholds, reports
+- [ ] Phase 13 — Evidence-driven improvement (+ optional UI)
+- [ ] Phase 14 — Documentation and portfolio polish
+
 **Goal of this phase:** turn every chunk from Phase 2 into an **embedding**, a list of 384 numbers that captures what the text *means*, using a small model that runs on your Mac. Then prove the numbers behave: similar sentences must score higher than unrelated ones. No LLM is needed, so Ollama can stay off. Previous phase: [Phase 2](https://claude.ai/code/artifact/4b5e335a-21aa-435a-98c4-3d6105208c7f). Tracker: [Phase 0 doc](https://claude.ai/code/artifact/b32269ff-ce8f-4186-b984-8cf68f206b1b).
 
 ## 3.1 Concepts
@@ -418,6 +438,115 @@ A few lines explained:
 | --- | --- | --- |
 | Quick check while coding | `uv run pytest tests/unit -v` | 0.93 s (19 tests) |
 | Everything, before a commit | `uv run pytest -v` | 15.56 s (24 tests) |
+
+### QA role for this phase
+
+**How important is testing here: medium.** As a tester you don't test the model's maths. You test its *contract*: the promises the code makes to the next stage (right shape, length 1, same input gives the same output, similar meaning scores higher). How *good* the embeddings are for our documents is measured later, through retrieval metrics in Phase 5.
+
+**What to test**
+
+| What can go wrong | How to check it | Manual or automated | Covered by |
+| --- | --- | --- | --- |
+| Similarity maths is wrong | Scores are 1.00, 0.96, 0.00 for the worked example | Automated | `cosine_scores_match_the_worked_example` |
+| Wrong number or size of vectors | 3 texts give shape `(3, 384)` | Automated | `one_vector_of_384_numbers_per_text` |
+| Normalization is off, so long chunks score too high | Every vector has length 1 | Automated | `every_vector_has_length_one` |
+| The model does not capture meaning | A related sentence scores higher than an unrelated one | Automated (integration) | `related_passage_scores_higher_than_unrelated` |
+| Runs can't be compared | The same text gives the same vector (to 0.000001) | Automated (integration) | `same_text_gives_the_same_vector` |
+| The query prefix is silently dropped | The prefix changes the vector | Automated (integration) | `query_prefix_changes_the_vector` |
+| Rankings look wrong for real questions | Read the ranked chunks for a few questions | Manual | Exercise Part A |
+| Scores are read as absolute ("0.6 means relevant") | Compare the *order* of scores, never one score alone | Manual | 3.1 "Scores are relative" |
+
+**How do we know the embedding worked?** `embed_texts()` returns a table of numbers held in memory, with no success flag and no stored record. So "the embedding worked" means a set of checks all pass on that table. Three of the ways it can go wrong are silent: a wrong model, text cut off at 512 tokens, and vectors in the wrong order all give numbers that look fine. That's why the checks are needed.
+
+The eight checks, run on your real sample documents (3 files, 7 chunks) on 16 Oct 2026:
+
+| # | Check | Why it matters | Real result | Covered by |
+| --- | --- | --- | --- | --- |
+| 1 | One vector per chunk | A missing or extra vector means chunks and vectors no longer line up | 7 chunks → shape `(7, 384)`, `float32` | `test_one_vector_of_384_numbers_per_text` (on 3 test sentences, not the real chunks) |
+| 2 | Every number is a real number (no `NaN` or infinity) | One broken vector breaks every score it touches | All finite | Not tested |
+| 3 | Every vector has length 1 | The dot-product score is only correct for normalized vectors | min 1.0, max 1.0 | `test_every_vector_has_length_one` |
+| 4 | No all-zero vector | An empty or failed text can come back as zeros, which match nothing | None found | Not tested |
+| 5 | Different chunks get different vectors | Two chunks with the same vector means something was copied | Highest similarity between two different chunks: 0.7856, not 1.0 | Not tested |
+| 6 | Vector *i* belongs to chunk *i* | Embedding all chunks at once (a batch) must give the same vectors as one at a time; otherwise the order may be mixed up | Biggest difference 0.00000018: the same | Not tested |
+| 7 | Each chunk finds itself first | With a chunk's own vector as the question, that chunk must rank 1st: a sign the vector really describes its text | 7 of 7 | Not tested |
+| 8 | No chunk is too long for the model | Text past 512 tokens is cut off silently, so its end is never embedded | Max 121 tokens, limit 512 | Not in Phase 3; the API Lab's `test_no_chunk_is_too_long_for_the_embedding_model` |
+
+Checks 2 and 4 to 7 were run with a one-off script, not a pytest test, so a future change could break them without anyone noticing. They are good candidates for new integration tests.
+
+**Manual testing: how**
+
+1. Run `try_ranking` with a question (Exercise Part A). Note the rank of the chunk you know is the answer.
+2. Write 3 pairs of sentences that mean the same thing in different words, and 3 unrelated pairs. Check that every same-meaning pair scores higher than every unrelated pair.
+3. Try a tricky pair: same words, different meaning ("leave the office" vs "annual leave"). Small models often fail these. Note what you see.
+
+**Automated testing: how**
+
+- `tests/unit/test_similarity.py`: 1 fast unit test of the maths, using hand-made vectors.
+- `tests/integration/test_embeddings.py`: 5 integration tests that load the real model (about 15 s), so they carry `@pytest.mark.integration` and stay out of the fast run.
+- Run them with the commands in 3.5: unit tests on every change, integration tests before each commit.
+
+**Not covered yet:** no test says whether bge-small is the *best* model for our documents. That is a quality question, answered with hit@k and MRR in Phase 5 and with a model comparison (MiniLM vs bge) in Phase 13.
+
+**How a real system tests this phase, and how we test it now**
+
+In a real system, the embedding model often runs as its own service (`POST /embed`) or comes from a hosted provider. QA tests it as a black box: texts go in, vectors come out. QA does not check the maths inside. QA checks the promises the service makes to the next stage.
+
+| What is checked | In a real system | In our project now |
+| --- | --- | --- |
+| Right shape | The reply says the vector size and returns one vector per text | `one_vector_of_384_numbers_per_text` |
+| Normalized | Every vector has length one | `every_vector_has_length_one` |
+| Repeatable | The same text gives the same vector | `same_text_gives_the_same_vector` |
+| Understands meaning | Related texts score higher than unrelated ones, measured on a golden set of question and chunk pairs. Models are compared with the same set | One related and one unrelated sentence |
+| Model version | The model name and version are saved with the index. If the query model differs from the index model, the mismatch is caught | One model in a constant; no check |
+| Speed and limits | Batch size limit, p95 time, cost per 1,000 chunks | A one-time load of about 15 seconds; no limits |
+| Languages | Questions in other languages are tested if users need them | English only |
+
+**Example: the same checks through an embedding API** (a sketch with made-up endpoints, not run):
+
+```python
+import math
+
+import requests
+
+API_URL = "http://localhost:8000"
+EXPECTED_MODEL = "BAAI/bge-small-en-v1.5"
+
+
+# Embed some texts through the embedding service.
+def embed(texts: list[str]) -> dict:
+    response = requests.post(f"{API_URL}/embed", json={"texts": texts}, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+# The service reports the model we expect and vectors of the right size.
+def test_embedding_service_reports_model_and_size():
+    reply = embed(["Annual leave is 27 days.", "Laptops are replaced every 3 years."])
+
+    assert reply["model"] == EXPECTED_MODEL
+    assert reply["dimension"] == 384
+    assert len(reply["vectors"]) == 2
+
+
+# Every vector has length one, and the same text gives the same vector.
+def test_vectors_are_normalized_and_repeatable():
+    first = embed(["Annual leave is 27 days."])["vectors"][0]
+    second = embed(["Annual leave is 27 days."])["vectors"][0]
+
+    squared_total = 0.0
+    for value in first:
+        squared_total += value * value
+    assert abs(math.sqrt(squared_total) - 1.0) < 0.0001
+
+    for first_value, second_value in zip(first, second):
+        assert abs(first_value - second_value) < 0.000001
+```
+
+- **Test 1** checks the `model` field. If someone swaps the model later, old vectors in the index no longer match new query vectors. Search gets worse and nothing crashes, so this check is what catches it.
+- **Test 2** is our `every_vector_has_length_one` and `same_text_gives_the_same_vector` tests, run on the service's output.
+- QA never opens the model. The tests only use what the service returns.
+
+**The gap, in one line:** our tests load the model in the same process. A real system tests it as a separate service, adds version tracking and limits, and compares models on a golden set before switching.
 
 ## 3.5 Run it
 

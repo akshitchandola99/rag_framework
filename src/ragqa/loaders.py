@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pymupdf
 
+from ragqa.errors import DocumentLoadError
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_FOLDER = PROJECT_ROOT / "data" / "raw"
 PREVIEW_LENGTH = 200
@@ -25,10 +27,10 @@ def load_text_file(file_path: Path) -> list[Page]:
     try:
         text = file_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
-        raise ValueError(f"{file_path.name}: not valid UTF-8 text ({error})") from error
+        raise DocumentLoadError(f"{file_path.name}: not valid UTF-8 text ({error})") from error
 
     if text.strip() == "":
-        raise ValueError(f"{file_path.name}: file has no text")
+        raise DocumentLoadError(f"{file_path.name}: file has no text")
 
     file_type = file_path.suffix.lower().lstrip(".")
     whole_file_page = Page(source=file_path.name, page=1, file_type=file_type, text=text)
@@ -40,7 +42,13 @@ def load_pdf(file_path: Path) -> list[Page]:
     try:
         pdf_document = pymupdf.open(file_path)
     except pymupdf.FileDataError as error:
-        raise ValueError(f"{file_path.name}: not a readable PDF ({error})") from error
+        raise DocumentLoadError(f"{file_path.name}: not a readable PDF ({error})") from error
+
+    # A password-protected PDF opens, but its pages can't be read. Without this check,
+    # PyMuPDF's own error ("document closed or encrypted") would not name the file.
+    if pdf_document.needs_pass:
+        pdf_document.close()
+        raise DocumentLoadError(f"{file_path.name}: PDF is password-protected")
 
     pages = []
     with pdf_document:
@@ -54,7 +62,7 @@ def load_pdf(file_path: Path) -> list[Page]:
             pages.append(Page(source=file_path.name, page=page_number, file_type="pdf", text=text))
 
     if len(pages) == 0:
-        raise ValueError(f"{file_path.name}: PDF has no extractable text (empty or scanned)")
+        raise DocumentLoadError(f"{file_path.name}: PDF has no extractable text (empty or scanned)")
     return pages
 
 
@@ -65,7 +73,7 @@ def load_document(file_path: Path) -> list[Page]:
         return load_pdf(file_path)
     if extension == ".md" or extension == ".txt":
         return load_text_file(file_path)
-    raise ValueError(f"{file_path.name}: unsupported file type '{extension}'")
+    raise DocumentLoadError(f"{file_path.name}: unsupported file type '{extension}'")
 
 
 # Load every document in a folder; collect reasons for skipped files.
@@ -82,7 +90,8 @@ def load_folder(folder_path: Path) -> tuple[list[Page], list[str]]:
 
         try:
             pages = load_document(file_path)
-        except ValueError as error:
+        except DocumentLoadError as error:
+            # Only our own "bad document" error is skipped. Any other error is a bug and stops the run.
             skipped_files.append(str(error))
             continue
         all_pages.extend(pages)
